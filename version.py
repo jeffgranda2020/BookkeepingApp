@@ -3,7 +3,7 @@ APP_VERSION = "1.0.0"
 APP_AUTHOR = "Jeff Granda-Arias"
 
 # GitHub repo for update checks (owner/repo)
-GITHUB_REPO = "jefgrany/BookkeepingApp"
+GITHUB_REPO = "jeffgranda2020/BookkeepingApp"
 
 CHANGELOG = {
     "1.0.0": [
