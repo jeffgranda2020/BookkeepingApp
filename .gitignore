@@ -5,6 +5,8 @@ dist/
 build/
 *.spec.bak
 bookkeeping.db
+bookkeeping_backup.db
 logo.png
+*.bak
 *.egg-info/
 .env

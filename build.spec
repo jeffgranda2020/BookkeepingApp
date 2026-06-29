@@ -3,13 +3,19 @@
 # Build with: pyinstaller build.spec
 
 import os
+import sys
 
 APP_DIR = os.path.dirname(os.path.abspath(SPECPATH))
+PYTHON_DIR = os.path.dirname(sys.executable)
 
 a = Analysis(
     ['main.py'],
     pathex=[APP_DIR],
-    binaries=[],
+    binaries=[
+        (os.path.join(PYTHON_DIR, 'vcruntime140.dll'), '.'),
+        (os.path.join(PYTHON_DIR, 'vcruntime140_1.dll'), '.'),
+        (os.path.join(PYTHON_DIR, 'python314.dll'), '.'),
+    ],
     datas=[
         ('app_icon.ico', '.'),
         ('app_icon.png', '.'),
@@ -43,7 +49,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

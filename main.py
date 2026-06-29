@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import csv
 import os
+import sys
 import re
 import shutil
 from datetime import datetime
@@ -17,25 +18,28 @@ import database as db
 import autocategorize
 import export_reports
 import updater
+import auth_ui
 from version import APP_NAME, APP_VERSION, APP_AUTHOR
 
 NOMI = pgeocode.Nominatim("us")
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class BookkeepingApp:
-    def __init__(self, root):
+    def __init__(self, root, user_id):
         self.root = root
+        self.user_id = user_id
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
-        self.root.geometry("1050x700")
+        self.root.state("zoomed")
         self.root.minsize(900, 600)
 
         # Set app icon
         icon_path = os.path.join(APP_DIR, "app_icon.ico")
         if os.path.exists(icon_path):
             self.root.iconbitmap(icon_path)
-
-        db.init_db()
 
         # Menu bar
         self._build_menu_bar()
@@ -55,6 +59,14 @@ class BookkeepingApp:
 
         # Check for updates in background
         self.root.after(2000, self._check_updates)
+
+    def _center_dialog(self, dialog):
+        dialog.update_idletasks()
+        w = dialog.winfo_width()
+        h = dialog.winfo_height()
+        x = (dialog.winfo_screenwidth() // 2) - (w // 2)
+        y = (dialog.winfo_screenheight() // 2) - (h // 2)
+        dialog.geometry(f"+{x}+{y}")
 
     # ──────────────────────────────────────────────
     # Menu Bar
@@ -92,6 +104,7 @@ class BookkeepingApp:
         dialog.geometry("520x400")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         ttk.Label(dialog, text="A new version is available!", font=("Segoe UI", 12, "bold")).pack(pady=(15, 5))
@@ -209,7 +222,10 @@ class BookkeepingApp:
         frame = ttk.Frame(self.notebook, padding=20)
         self.notebook.add(frame, text="Company Information")
 
-        ttk.Label(frame, text="Company Information", font=("Segoe UI", 16, "bold")).grid(
+        content = ttk.Frame(frame)
+        content.pack(anchor="w")
+
+        ttk.Label(content, text="Company Information", font=("Segoe UI", 16, "bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 20)
         )
 
@@ -223,15 +239,15 @@ class BookkeepingApp:
 
         self.company_entries = {}
         for i, label in enumerate(labels, start=1):
-            ttk.Label(frame, text=label + ":").grid(row=i, column=0, sticky="e", padx=(0, 10), pady=6)
-            entry = ttk.Entry(frame, width=40)
+            ttk.Label(content, text=label + ":").grid(row=i, column=0, sticky="e", padx=(0, 10), pady=6)
+            entry = ttk.Entry(content, width=40)
             entry.grid(row=i, column=1, sticky="w", pady=6)
             self.company_entries[label] = entry
 
         next_row = len(labels) + 1
 
         # Logo section
-        logo_frame = ttk.LabelFrame(frame, text="Company Logo", padding=10)
+        logo_frame = ttk.LabelFrame(content, text="Company Logo", padding=10)
         logo_frame.grid(row=next_row, column=0, columnspan=2, sticky="w", pady=10)
 
         self.logo_preview_label = ttk.Label(logo_frame, text="No logo uploaded")
@@ -240,28 +256,26 @@ class BookkeepingApp:
         ttk.Button(logo_frame, text="Upload Logo", command=self._upload_logo).pack(side="left", padx=5)
         ttk.Button(logo_frame, text="Remove Logo", command=self._remove_logo).pack(side="left", padx=5)
 
-        btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=next_row + 1, column=0, columnspan=2, pady=20)
+        btn_frame = ttk.Frame(content)
+        btn_frame.grid(row=next_row + 1, column=0, columnspan=2, sticky="w", pady=20)
         ttk.Button(btn_frame, text="Save", command=self._save_company_info).pack(side="left", padx=5)
-
-        frame.columnconfigure(1, weight=1)
 
         self._load_company_info()
         self._update_logo_preview()
 
     def _save_company_info(self):
         data = {k: v.get() for k, v in self.company_entries.items()}
-        db.save_company_info(data)
+        db.save_company_info(data, self.user_id)
         messagebox.showinfo("Saved", "Company information saved.")
 
     def _load_company_info(self):
-        data = db.load_company_info()
+        data = db.load_company_info(self.user_id)
         for key, entry in self.company_entries.items():
             if key in data:
                 entry.insert(0, data[key])
 
     def _get_logo_path(self):
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        return os.path.join(APP_DIR, "logo.png")
 
     def _upload_logo(self):
         filepath = filedialog.askopenfilename(
@@ -451,6 +465,9 @@ class BookkeepingApp:
         ttk.Button(toolbar, text="Add Transaction", command=self._add_transaction_dialog).pack(side="left", padx=5)
         ttk.Button(toolbar, text="Add Category", command=self._add_category_dialog).pack(side="left", padx=5)
         ttk.Button(toolbar, text="Categorize Selected", command=self._categorize_selected).pack(side="left", padx=5)
+        ttk.Button(toolbar, text="Delete Selected", command=self._delete_selected_txn).pack(side="left", padx=5)
+        ttk.Button(toolbar, text="Select All", command=self._select_all_txn).pack(side="left", padx=5)
+        ttk.Button(toolbar, text="Deselect All", command=self._deselect_all_txn).pack(side="left", padx=5)
         ttk.Button(toolbar, text="Generate P&L", command=self._generate_pl).pack(side="right", padx=5)
         ttk.Button(toolbar, text="Generate Balance Sheet", command=self._generate_balance_sheet).pack(side="right", padx=5)
 
@@ -471,9 +488,10 @@ class BookkeepingApp:
         cols = ("Date", "Description", "Amount", "Category Type", "Category", "Source")
         self.txn_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=18, selectmode="extended")
         for col in cols:
-            self.txn_tree.heading(col, text=col)
-            width = 80 if col in ("Date", "Amount", "Source") else 150
-            self.txn_tree.column(col, width=width, anchor="w")
+            self.txn_tree.heading(col, text=col, anchor="center")
+            width = 100 if col in ("Date", "Amount", "Source") else 160
+            anchor = "center"
+            self.txn_tree.column(col, width=width, anchor=anchor, stretch=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.txn_tree.yview)
         self.txn_tree.configure(yscrollcommand=scrollbar.set)
@@ -490,7 +508,7 @@ class BookkeepingApp:
             self.txn_tree.delete(row)
         query = self._txn_filter_var.get().lower() if hasattr(self, "_txn_filter_var") else ""
         cols = self.txn_tree["columns"]
-        transactions = db.get_transactions()
+        transactions = db.get_transactions(user_id=self.user_id)
         for txn in transactions:
             tid, date, desc, amount, cat_type, cat_name, source = txn
             values = (date, desc or "", f"${amount:,.2f}", cat_type or "", cat_name or "Uncategorized", source or "")
@@ -500,33 +518,59 @@ class BookkeepingApp:
                 continue
             self.txn_tree.insert("", "end", iid=tid, values=values)
 
+    def _select_all_txn(self):
+        items = self.txn_tree.get_children()
+        self.txn_tree.selection_set(items)
+
+    def _deselect_all_txn(self):
+        self.txn_tree.selection_remove(self.txn_tree.selection())
+
+    def _delete_selected_txn(self):
+        selected = self.txn_tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Select one or more transactions to delete.")
+            return
+        count = len(selected)
+        if not messagebox.askyesno("Confirm", f"Delete {count} transaction(s)? This cannot be undone."):
+            return
+        txn_ids = [int(item) for item in selected]
+        db.delete_transactions(txn_ids)
+        self._refresh_transactions()
+
     def _add_transaction_dialog(self):
         dialog = tk.Toplevel(self.root)
         dialog.title("Add Transaction")
-        dialog.geometry("400x300")
+        dialog.geometry("450x320")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
+        dialog.resizable(False, False)
 
-        ttk.Label(dialog, text="Date (YYYY-MM-DD):").grid(row=0, column=0, padx=10, pady=5, sticky="e")
-        date_entry = ttk.Entry(dialog, width=20)
+        pad = {"padx": 12, "pady": 8}
+
+        form_frame = ttk.LabelFrame(dialog, text="Transaction Details", padding=10)
+        form_frame.pack(fill="x", padx=15, pady=(15, 5))
+
+        ttk.Label(form_frame, text="Date:").grid(row=0, column=0, sticky="e", **pad)
+        date_entry = ttk.Entry(form_frame, width=28)
         date_entry.insert(0, datetime.now().strftime("%Y-%m-%d"))
-        date_entry.grid(row=0, column=1, padx=10, pady=5)
+        date_entry.grid(row=0, column=1, sticky="w", **pad)
 
-        ttk.Label(dialog, text="Description:").grid(row=1, column=0, padx=10, pady=5, sticky="e")
-        desc_entry = ttk.Entry(dialog, width=30)
-        desc_entry.grid(row=1, column=1, padx=10, pady=5)
+        ttk.Label(form_frame, text="Description:").grid(row=1, column=0, sticky="e", **pad)
+        desc_entry = ttk.Entry(form_frame, width=28)
+        desc_entry.grid(row=1, column=1, sticky="w", **pad)
 
-        ttk.Label(dialog, text="Amount:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
-        amount_entry = ttk.Entry(dialog, width=20)
-        amount_entry.grid(row=2, column=1, padx=10, pady=5)
+        ttk.Label(form_frame, text="Amount:").grid(row=2, column=0, sticky="e", **pad)
+        amount_entry = ttk.Entry(form_frame, width=28)
+        amount_entry.grid(row=2, column=1, sticky="w", **pad)
 
-        ttk.Label(dialog, text="Category:").grid(row=3, column=0, padx=10, pady=5, sticky="e")
-        categories = db.get_categories()
+        ttk.Label(form_frame, text="Category:").grid(row=3, column=0, sticky="e", **pad)
+        categories = db.get_categories(user_id=self.user_id)
         cat_display = [f"{c[1]} - {c[2]}" for c in categories]
         cat_ids = [c[0] for c in categories]
         cat_var = tk.StringVar()
-        cat_combo = ttk.Combobox(dialog, textvariable=cat_var, values=cat_display, width=30, state="readonly")
-        cat_combo.grid(row=3, column=1, padx=10, pady=5)
+        cat_combo = ttk.Combobox(form_frame, textvariable=cat_var, values=cat_display, width=26, state="readonly")
+        cat_combo.grid(row=3, column=1, sticky="w", **pad)
 
         def save():
             try:
@@ -537,11 +581,11 @@ class BookkeepingApp:
             date_val = date_entry.get().strip()
             cat_idx = cat_combo.current()
             cat_id = cat_ids[cat_idx] if cat_idx >= 0 else None
-            db.add_transaction(date_val, desc_entry.get().strip(), amount, cat_id)
+            db.add_transaction(date_val, desc_entry.get().strip(), amount, cat_id, user_id=self.user_id)
             dialog.destroy()
             self._refresh_transactions()
 
-        ttk.Button(dialog, text="Save", command=save).grid(row=4, column=0, columnspan=2, pady=20)
+        ttk.Button(dialog, text="Save", command=save).pack(pady=15)
 
     def _edit_transaction_category(self, event):
         item = self.txn_tree.focus()
@@ -554,9 +598,10 @@ class BookkeepingApp:
         dialog.geometry("350x180")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
 
         ttk.Label(dialog, text="Category:").pack(pady=10)
-        categories = db.get_categories()
+        categories = db.get_categories(user_id=self.user_id)
         cat_display = [f"{c[1]} - {c[2]}" for c in categories]
         cat_ids = [c[0] for c in categories]
         cat_var = tk.StringVar()
@@ -585,9 +630,10 @@ class BookkeepingApp:
         dialog.geometry("400x180")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
 
         ttk.Label(dialog, text=f"Assign category to {len(txn_ids)} selected transaction(s):").pack(pady=10)
-        categories = db.get_categories()
+        categories = db.get_categories(user_id=self.user_id)
         cat_display = [f"{c[1]} - {c[2]}" for c in categories]
         cat_ids = [c[0] for c in categories]
         cat_var = tk.StringVar()
@@ -607,23 +653,30 @@ class BookkeepingApp:
     def _add_category_dialog(self):
         dialog = tk.Toplevel(self.root)
         dialog.title("Add Custom Category")
-        dialog.geometry("400x200")
+        dialog.geometry("420x230")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
+        dialog.resizable(False, False)
 
-        ttk.Label(dialog, text="Category Type:").grid(row=0, column=0, padx=10, pady=10, sticky="e")
+        pad = {"padx": 12, "pady": 8}
+
+        form_frame = ttk.LabelFrame(dialog, text="Category Details", padding=10)
+        form_frame.pack(fill="x", padx=15, pady=(15, 5))
+
+        ttk.Label(form_frame, text="Type:").grid(row=0, column=0, sticky="e", **pad)
         type_var = tk.StringVar()
         type_combo = ttk.Combobox(
-            dialog, textvariable=type_var,
+            form_frame, textvariable=type_var,
             values=["Income", "COGS", "Expense", "Asset", "Liability", "Equity"],
-            width=20, state="readonly"
+            width=26, state="readonly"
         )
-        type_combo.grid(row=0, column=1, padx=10, pady=10)
+        type_combo.grid(row=0, column=1, sticky="w", **pad)
         type_combo.current(2)
 
-        ttk.Label(dialog, text="Category Name:").grid(row=1, column=0, padx=10, pady=10, sticky="e")
-        name_entry = ttk.Entry(dialog, width=30)
-        name_entry.grid(row=1, column=1, padx=10, pady=10)
+        ttk.Label(form_frame, text="Name:").grid(row=1, column=0, sticky="e", **pad)
+        name_entry = ttk.Entry(form_frame, width=28)
+        name_entry.grid(row=1, column=1, sticky="w", **pad)
 
         def save():
             cat_type = type_var.get()
@@ -631,14 +684,14 @@ class BookkeepingApp:
             if not cat_name:
                 messagebox.showerror("Error", "Enter a category name.")
                 return
-            added = db.add_category(cat_type, cat_name)
+            added = db.add_category(cat_type, cat_name, user_id=self.user_id)
             if added:
                 messagebox.showinfo("Added", f"Category '{cat_name}' added under {cat_type}.")
             else:
                 messagebox.showwarning("Exists", f"Category '{cat_name}' already exists under {cat_type}.")
             dialog.destroy()
 
-        ttk.Button(dialog, text="Save", command=save).grid(row=2, column=0, columnspan=2, pady=20)
+        ttk.Button(dialog, text="Save", command=save).pack(pady=15)
 
     def _import_statement(self):
         filepath = filedialog.askopenfilename(
@@ -684,6 +737,7 @@ class BookkeepingApp:
         dialog.geometry("900x520")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
 
         ttk.Label(dialog, text=f"Found {len(rows)} transactions. Double-click to edit, then Import.", font=("Segoe UI", 10, "bold")).pack(pady=10)
 
@@ -692,14 +746,14 @@ class BookkeepingApp:
 
         cols = ("Date", "Description", "Amount", "Category")
         tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=18)
-        tree.heading("Date", text="Date")
-        tree.heading("Description", text="Description")
-        tree.heading("Amount", text="Amount")
-        tree.heading("Category", text="Category")
-        tree.column("Date", width=90)
-        tree.column("Description", width=360)
-        tree.column("Amount", width=100)
-        tree.column("Category", width=220)
+        tree.heading("Date", text="Date", anchor="center")
+        tree.heading("Description", text="Description", anchor="center")
+        tree.heading("Amount", text="Amount", anchor="center")
+        tree.heading("Category", text="Category", anchor="center")
+        tree.column("Date", width=90, anchor="center", stretch=True)
+        tree.column("Description", width=360, anchor="center", stretch=True)
+        tree.column("Amount", width=100, anchor="center", stretch=True)
+        tree.column("Category", width=220, anchor="center", stretch=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=scrollbar.set)
@@ -728,6 +782,7 @@ class BookkeepingApp:
             edit_dialog.geometry("450x250")
             edit_dialog.transient(dialog)
             edit_dialog.grab_set()
+            self._center_dialog(edit_dialog)
             edit_dialog.resizable(False, False)
 
             row_data = import_data[idx]
@@ -749,7 +804,7 @@ class BookkeepingApp:
             amt_e.grid(row=2, column=1, sticky="w", **pad)
 
             ttk.Label(edit_dialog, text="Category:").grid(row=3, column=0, sticky="e", **pad)
-            categories = db.get_categories()
+            categories = db.get_categories(user_id=self.user_id)
             cat_display = ["Uncategorized"] + [f"{c[1]} - {c[2]}" for c in categories]
             cat_var = tk.StringVar(value=row_data[3])
             cat_combo = ttk.Combobox(edit_dialog, textvariable=cat_var, values=cat_display, width=35, state="readonly")
@@ -800,13 +855,13 @@ class BookkeepingApp:
 
         def confirm():
             source = os.path.basename(filepath)
-            categories = db.get_categories()
+            categories = db.get_categories(user_id=self.user_id)
             cat_lookup = {f"{c[1]} - {c[2]}": c[0] for c in categories}
             db_rows = []
             for row_data in import_data:
                 cat_id = cat_lookup.get(row_data[3])
                 db_rows.append((row_data[0], row_data[1], row_data[2], cat_id, source))
-            db.add_transactions_bulk(db_rows)
+            db.add_transactions_bulk(db_rows, user_id=self.user_id)
             self._refresh_transactions()
             dialog.destroy()
             messagebox.showinfo("Import Complete", f"Imported {len(db_rows)} transactions.")
@@ -1081,16 +1136,16 @@ class BookkeepingApp:
         cols = ("ID", "Name", "Address", "City", "State", "Zip", "Phone", "Email", "EIN")
         self.primary_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14)
         for col in cols:
-            self.primary_tree.heading(col, text=col)
-        self.primary_tree.column("ID", width=50)
-        self.primary_tree.column("Name", width=150)
-        self.primary_tree.column("Address", width=140)
-        self.primary_tree.column("City", width=90)
-        self.primary_tree.column("State", width=45)
-        self.primary_tree.column("Zip", width=50)
-        self.primary_tree.column("Phone", width=100)
-        self.primary_tree.column("Email", width=140)
-        self.primary_tree.column("EIN", width=90)
+            self.primary_tree.heading(col, text=col, anchor="center")
+        self.primary_tree.column("ID", width=50, anchor="center", stretch=True)
+        self.primary_tree.column("Name", width=150, anchor="center", stretch=True)
+        self.primary_tree.column("Address", width=140, anchor="center", stretch=True)
+        self.primary_tree.column("City", width=90, anchor="center", stretch=True)
+        self.primary_tree.column("State", width=45, anchor="center", stretch=True)
+        self.primary_tree.column("Zip", width=50, anchor="center", stretch=True)
+        self.primary_tree.column("Phone", width=100, anchor="center", stretch=True)
+        self.primary_tree.column("Email", width=140, anchor="center", stretch=True)
+        self.primary_tree.column("EIN", width=90, anchor="center", stretch=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.primary_tree.yview)
         self.primary_tree.configure(yscrollcommand=scrollbar.set)
@@ -1124,16 +1179,16 @@ class BookkeepingApp:
         cols = ("ID", "Name", "Address", "City", "State", "Zip", "Phone", "Email", "SSN/TIN")
         self.sub_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14)
         for col in cols:
-            self.sub_tree.heading(col, text=col)
-        self.sub_tree.column("ID", width=50)
-        self.sub_tree.column("Name", width=150)
-        self.sub_tree.column("Address", width=140)
-        self.sub_tree.column("City", width=90)
-        self.sub_tree.column("State", width=45)
-        self.sub_tree.column("Zip", width=50)
-        self.sub_tree.column("Phone", width=100)
-        self.sub_tree.column("Email", width=140)
-        self.sub_tree.column("SSN/TIN", width=90)
+            self.sub_tree.heading(col, text=col, anchor="center")
+        self.sub_tree.column("ID", width=50, anchor="center", stretch=True)
+        self.sub_tree.column("Name", width=150, anchor="center", stretch=True)
+        self.sub_tree.column("Address", width=140, anchor="center", stretch=True)
+        self.sub_tree.column("City", width=90, anchor="center", stretch=True)
+        self.sub_tree.column("State", width=45, anchor="center", stretch=True)
+        self.sub_tree.column("Zip", width=50, anchor="center", stretch=True)
+        self.sub_tree.column("Phone", width=100, anchor="center", stretch=True)
+        self.sub_tree.column("Email", width=140, anchor="center", stretch=True)
+        self.sub_tree.column("SSN/TIN", width=90, anchor="center", stretch=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.sub_tree.yview)
         self.sub_tree.configure(yscrollcommand=scrollbar.set)
@@ -1148,7 +1203,7 @@ class BookkeepingApp:
             self.primary_tree.delete(row)
         query = self._primary_filter_var.get().lower() if hasattr(self, "_primary_filter_var") else ""
         cols = self.primary_tree["columns"]
-        contractors = db.get_contractors("Primary")
+        contractors = db.get_contractors("Primary", user_id=self.user_id)
         for c in contractors:
             cid, code_id, name, street, city, state, zipcode, phone, email, ein, ssn_tin = c
             values = (code_id, name, street or "", city or "", state or "", zipcode or "", phone or "", email or "", ein or "")
@@ -1163,7 +1218,7 @@ class BookkeepingApp:
             self.sub_tree.delete(row)
         query = self._sub_filter_var.get().lower() if hasattr(self, "_sub_filter_var") else ""
         cols = self.sub_tree["columns"]
-        contractors = db.get_contractors("Subcontractor")
+        contractors = db.get_contractors("Subcontractor", user_id=self.user_id)
         for c in contractors:
             cid, code_id, name, street, city, state, zipcode, phone, email, ein, ssn_tin = c
             values = (code_id, name, street or "", city or "", state or "", zipcode or "", phone or "", email or "", ssn_tin or "")
@@ -1189,6 +1244,7 @@ class BookkeepingApp:
         dialog.geometry("480x420")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         pad = {"padx": 12, "pady": 6}
@@ -1242,20 +1298,31 @@ class BookkeepingApp:
 
         # Save button
         def save():
-            name = entries["Name"].get().strip()
-            if not name:
-                messagebox.showerror("Error", "Name is required.")
+            required = {
+                "Name": entries["Name"].get().strip(),
+                "Phone": entries["Phone"].get().strip(),
+                "Email": entries["Email"].get().strip(),
+                "EIN Number": entries["EIN Number"].get().strip(),
+                "Street Address": entries["Street Address"].get().strip(),
+                "Zip Code": entries["Zip Code"].get().strip(),
+                "City": entries["City"].get().strip(),
+                "State": entries["State"].get().strip(),
+            }
+            missing = [k for k, v in required.items() if not v]
+            if missing:
+                messagebox.showerror("Error", f"All fields are required.\nMissing: {', '.join(missing)}")
                 return
             code = db.add_contractor(
                 "Primary",
-                name,
-                street=entries["Street Address"].get().strip(),
-                city=entries["City"].get().strip(),
-                state=entries["State"].get().strip(),
-                zipcode=entries["Zip Code"].get().strip(),
-                phone=entries["Phone"].get().strip(),
-                email=entries["Email"].get().strip(),
-                ein=entries["EIN Number"].get().strip(),
+                required["Name"],
+                street=required["Street Address"],
+                city=required["City"],
+                state=required["State"],
+                zipcode=required["Zip Code"],
+                phone=required["Phone"],
+                email=required["Email"],
+                ein=required["EIN Number"],
+                user_id=self.user_id,
             )
             dialog.destroy()
             self._refresh_primary()
@@ -1269,6 +1336,7 @@ class BookkeepingApp:
         dialog.geometry("480x420")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         pad = {"padx": 12, "pady": 6}
@@ -1322,20 +1390,31 @@ class BookkeepingApp:
 
         # Save button
         def save():
-            name = entries["Name"].get().strip()
-            if not name:
-                messagebox.showerror("Error", "Name is required.")
+            required = {
+                "Name": entries["Name"].get().strip(),
+                "Phone": entries["Phone"].get().strip(),
+                "Email": entries["Email"].get().strip(),
+                "SSN or TIN": entries["SSN or TIN"].get().strip(),
+                "Street Address": entries["Street Address"].get().strip(),
+                "Zip Code": entries["Zip Code"].get().strip(),
+                "City": entries["City"].get().strip(),
+                "State": entries["State"].get().strip(),
+            }
+            missing = [k for k, v in required.items() if not v]
+            if missing:
+                messagebox.showerror("Error", f"All fields are required.\nMissing: {', '.join(missing)}")
                 return
             code = db.add_contractor(
                 "Subcontractor",
-                name,
-                street=entries["Street Address"].get().strip(),
-                city=entries["City"].get().strip(),
-                state=entries["State"].get().strip(),
-                zipcode=entries["Zip Code"].get().strip(),
-                phone=entries["Phone"].get().strip(),
-                email=entries["Email"].get().strip(),
-                ssn_tin=entries["SSN or TIN"].get().strip(),
+                required["Name"],
+                street=required["Street Address"],
+                city=required["City"],
+                state=required["State"],
+                zipcode=required["Zip Code"],
+                phone=required["Phone"],
+                email=required["Email"],
+                ssn_tin=required["SSN or TIN"],
+                user_id=self.user_id,
             )
             dialog.destroy()
             self._refresh_subs()
@@ -1404,15 +1483,15 @@ class BookkeepingApp:
         cols = ("Invoice #", "Primary", "Week #", "From", "To", "Total", "Status", "Payment")
         self.primary_inv_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14)
         for col in cols:
-            self.primary_inv_tree.heading(col, text=col)
-        self.primary_inv_tree.column("Invoice #", width=75)
-        self.primary_inv_tree.column("Primary", width=155)
-        self.primary_inv_tree.column("Week #", width=55)
-        self.primary_inv_tree.column("From", width=85)
-        self.primary_inv_tree.column("To", width=85)
-        self.primary_inv_tree.column("Total", width=90)
-        self.primary_inv_tree.column("Status", width=65)
-        self.primary_inv_tree.column("Payment", width=100)
+            self.primary_inv_tree.heading(col, text=col, anchor="center")
+        self.primary_inv_tree.column("Invoice #", width=75, anchor="center", stretch=True)
+        self.primary_inv_tree.column("Primary", width=155, anchor="center", stretch=True)
+        self.primary_inv_tree.column("Week #", width=55, anchor="center", stretch=True)
+        self.primary_inv_tree.column("From", width=85, anchor="center", stretch=True)
+        self.primary_inv_tree.column("To", width=85, anchor="center", stretch=True)
+        self.primary_inv_tree.column("Total", width=90, anchor="center", stretch=True)
+        self.primary_inv_tree.column("Status", width=65, anchor="center", stretch=True)
+        self.primary_inv_tree.column("Payment", width=100, anchor="center", stretch=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.primary_inv_tree.yview)
         self.primary_inv_tree.configure(yscrollcommand=scrollbar.set)
@@ -1424,7 +1503,7 @@ class BookkeepingApp:
         self._refresh_primary_invoices()
 
     def _update_primary_filter_list(self):
-        primaries = db.get_contractors("Primary")
+        primaries = db.get_contractors("Primary", user_id=self.user_id)
         names = ["All"] + [c[2] for c in primaries]
         self._primary_inv_combo["values"] = names
         self._primary_inv_filter_ids = {c[2]: c[0] for c in primaries}
@@ -1459,14 +1538,14 @@ class BookkeepingApp:
         cols = ("Invoice #", "Client", "From", "To", "Total", "Status", "Payment")
         self.client_inv_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14)
         for col in cols:
-            self.client_inv_tree.heading(col, text=col)
-        self.client_inv_tree.column("Invoice #", width=80)
-        self.client_inv_tree.column("Client", width=160)
-        self.client_inv_tree.column("From", width=85)
-        self.client_inv_tree.column("To", width=85)
-        self.client_inv_tree.column("Total", width=90)
-        self.client_inv_tree.column("Status", width=65)
-        self.client_inv_tree.column("Payment", width=100)
+            self.client_inv_tree.heading(col, text=col, anchor="center")
+        self.client_inv_tree.column("Invoice #", width=80, anchor="center", stretch=True)
+        self.client_inv_tree.column("Client", width=160, anchor="center", stretch=True)
+        self.client_inv_tree.column("From", width=85, anchor="center", stretch=True)
+        self.client_inv_tree.column("To", width=85, anchor="center", stretch=True)
+        self.client_inv_tree.column("Total", width=90, anchor="center", stretch=True)
+        self.client_inv_tree.column("Status", width=65, anchor="center", stretch=True)
+        self.client_inv_tree.column("Payment", width=100, anchor="center", stretch=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.client_inv_tree.yview)
         self.client_inv_tree.configure(yscrollcommand=scrollbar.set)
@@ -1478,7 +1557,7 @@ class BookkeepingApp:
         self._refresh_client_invoices()
 
     def _update_client_filter_list(self):
-        clients = db.get_clients()
+        clients = db.get_clients(user_id=self.user_id)
         names = ["All"] + [c[2] for c in clients]
         self._client_inv_combo["values"] = names
         self._client_inv_filter_ids = {c[2]: c[0] for c in clients}
@@ -1506,14 +1585,14 @@ class BookkeepingApp:
         cols = ("ID", "Name", "Address", "City", "State", "Zip", "Phone")
         self.client_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14)
         for col in cols:
-            self.client_tree.heading(col, text=col)
-        self.client_tree.column("ID", width=50)
-        self.client_tree.column("Name", width=180)
-        self.client_tree.column("Address", width=160)
-        self.client_tree.column("City", width=100)
-        self.client_tree.column("State", width=45)
-        self.client_tree.column("Zip", width=55)
-        self.client_tree.column("Phone", width=110)
+            self.client_tree.heading(col, text=col, anchor="center")
+        self.client_tree.column("ID", width=50, anchor="center", stretch=True)
+        self.client_tree.column("Name", width=180, anchor="center", stretch=True)
+        self.client_tree.column("Address", width=160, anchor="center", stretch=True)
+        self.client_tree.column("City", width=100, anchor="center", stretch=True)
+        self.client_tree.column("State", width=45, anchor="center", stretch=True)
+        self.client_tree.column("Zip", width=55, anchor="center", stretch=True)
+        self.client_tree.column("Phone", width=110, anchor="center", stretch=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.client_tree.yview)
         self.client_tree.configure(yscrollcommand=scrollbar.set)
@@ -1531,7 +1610,7 @@ class BookkeepingApp:
             self.primary_inv_tree.delete(row)
         filter_name = self._primary_inv_filter_var.get() if hasattr(self, "_primary_inv_filter_var") else "All"
         filter_id = self._primary_inv_filter_ids.get(filter_name) if filter_name != "All" else None
-        invoices = db.get_invoices("Primary")
+        invoices = db.get_invoices("Primary", user_id=self.user_id)
         for inv in invoices:
             iid, inv_num, inv_type, rec_type, rec_id, week, dfrom, dto, created, status, total = inv[:11]
             if filter_id and rec_id != filter_id:
@@ -1551,7 +1630,7 @@ class BookkeepingApp:
             self.client_inv_tree.delete(row)
         filter_name = self._client_inv_filter_var.get() if hasattr(self, "_client_inv_filter_var") else "All"
         filter_id = self._client_inv_filter_ids.get(filter_name) if filter_name != "All" else None
-        invoices = db.get_invoices("Client")
+        invoices = db.get_invoices("Client", user_id=self.user_id)
         for inv in invoices:
             iid, inv_num, inv_type, rec_type, rec_id, week, dfrom, dto, created, status, total = inv[:11]
             if filter_id and rec_id != filter_id:
@@ -1568,7 +1647,7 @@ class BookkeepingApp:
             self.client_tree.delete(row)
         query = self._client_filter_var.get().lower() if hasattr(self, "_client_filter_var") else ""
         cols = self.client_tree["columns"]
-        clients = db.get_clients()
+        clients = db.get_clients(user_id=self.user_id)
         for c in clients:
             cid, code_id, name, street, city, state, zipcode, phone = c
             values = (code_id, name, street or "", city or "", state or "", zipcode or "", phone or "")
@@ -1583,9 +1662,10 @@ class BookkeepingApp:
     def _add_client_dialog(self):
         dialog = tk.Toplevel(self.root)
         dialog.title("Add Individual Client")
-        dialog.geometry("450x320")
+        dialog.geometry("450x400")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         pad = {"padx": 12, "pady": 6}
@@ -1639,6 +1719,7 @@ class BookkeepingApp:
                 state=entries["State"].get().strip(),
                 zipcode=entries["Zip"].get().strip(),
                 phone=entries["Phone"].get().strip(),
+                user_id=self.user_id,
             )
             dialog.destroy()
             self._refresh_clients()
@@ -1664,6 +1745,7 @@ class BookkeepingApp:
         dialog.geometry("500x250")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         pad = {"padx": 12, "pady": 8}
@@ -1674,7 +1756,7 @@ class BookkeepingApp:
         form.pack(fill="x", padx=20)
 
         ttk.Label(form, text="Primary:").grid(row=0, column=0, sticky="e", **pad)
-        primaries = db.get_contractors("Primary")
+        primaries = db.get_contractors("Primary", user_id=self.user_id)
         primary_names = [f"{c[1]} - {c[2]}" for c in primaries]
         primary_ids = [c[0] for c in primaries]
         primary_var = tk.StringVar()
@@ -1704,6 +1786,7 @@ class BookkeepingApp:
                 week_number=int(week) if week.isdigit() else None,
                 date_from=from_var.get(),
                 date_to=to_var.get(),
+                user_id=self.user_id,
             )
             dialog.destroy()
             self._refresh_primary_invoices()
@@ -1717,6 +1800,7 @@ class BookkeepingApp:
         dialog.geometry("500x220")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         pad = {"padx": 12, "pady": 8}
@@ -1727,7 +1811,7 @@ class BookkeepingApp:
         form.pack(fill="x", padx=20)
 
         ttk.Label(form, text="Client:").grid(row=0, column=0, sticky="e", **pad)
-        clients = db.get_clients()
+        clients = db.get_clients(user_id=self.user_id)
         client_names = [f"{c[1]} - {c[2]}" for c in clients]
         client_ids = [c[0] for c in clients]
         client_var = tk.StringVar()
@@ -1751,6 +1835,7 @@ class BookkeepingApp:
                 "Client", "Client", client_ids[idx],
                 date_from=from_var.get(),
                 date_to=to_var.get(),
+                user_id=self.user_id,
             )
             dialog.destroy()
             self._refresh_client_invoices()
@@ -1812,16 +1897,16 @@ class BookkeepingApp:
 
         cols = ("Date", "Customer", "Mobile #", "Service", "Price")
         job_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=18)
-        job_tree.heading("Date", text="Date")
-        job_tree.heading("Customer", text="Customer")
-        job_tree.heading("Mobile #", text="Mobile #")
-        job_tree.heading("Service", text="Service")
-        job_tree.heading("Price", text="Price")
-        job_tree.column("Date", width=90)
-        job_tree.column("Customer", width=160)
-        job_tree.column("Mobile #", width=120)
-        job_tree.column("Service", width=220)
-        job_tree.column("Price", width=100, anchor="e")
+        job_tree.heading("Date", text="Date", anchor="center")
+        job_tree.heading("Customer", text="Customer", anchor="center")
+        job_tree.heading("Mobile #", text="Mobile #", anchor="center")
+        job_tree.heading("Service", text="Service", anchor="center")
+        job_tree.heading("Price", text="Price", anchor="center")
+        job_tree.column("Date", width=90, anchor="center", stretch=True)
+        job_tree.column("Customer", width=160, anchor="center", stretch=True)
+        job_tree.column("Mobile #", width=120, anchor="center", stretch=True)
+        job_tree.column("Service", width=220, anchor="center", stretch=True)
+        job_tree.column("Price", width=100, anchor="center", stretch=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=job_tree.yview)
         job_tree.configure(yscrollcommand=scrollbar.set)
@@ -1864,6 +1949,7 @@ class BookkeepingApp:
             cust_dialog.geometry("600x560")
             cust_dialog.transient(dialog)
             cust_dialog.grab_set()
+            self._center_dialog(cust_dialog)
             cust_dialog.resizable(False, False)
 
             # Customer info
@@ -1889,7 +1975,7 @@ class BookkeepingApp:
             add_frame = ttk.LabelFrame(cust_dialog, text="Add Service", padding=8)
             add_frame.pack(fill="x", padx=12, pady=5)
 
-            all_svcs = db.get_services()
+            all_svcs = db.get_services(user_id=self.user_id)
             svc_names = [s[1] for s in all_svcs]
             svc_var = tk.StringVar()
             ttk.Label(add_frame, text="Service:").pack(side="left", padx=(0, 5))
@@ -1926,10 +2012,10 @@ class BookkeepingApp:
             svc_frame.pack(fill="both", expand=True, padx=12, pady=5)
 
             svc_list = ttk.Treeview(svc_frame, columns=("Service", "Price"), show="headings", height=7)
-            svc_list.heading("Service", text="Service")
-            svc_list.heading("Price", text="Price")
-            svc_list.column("Service", width=320)
-            svc_list.column("Price", width=100, anchor="e")
+            svc_list.heading("Service", text="Service", anchor="center")
+            svc_list.heading("Price", text="Price", anchor="center")
+            svc_list.column("Service", width=320, anchor="center", stretch=True)
+            svc_list.column("Price", width=100, anchor="center", stretch=True)
             svc_list.pack(fill="both", expand=True)
 
             total_row = ttk.Frame(svc_frame)
@@ -2004,12 +2090,13 @@ class BookkeepingApp:
         _, inv_num, inv_type, rec_type, rec_id, week, dfrom, dto, created, status, pay_method, pay_notes, total = inv
         recipient_name = db.get_recipient_name(rec_type, rec_id)
         is_primary = (inv_type == "Primary")
-        company = db.load_company_info()
+        company = db.load_company_info(self.user_id)
         jobs = db.get_invoice_jobs(invoice_id)
 
         preview = tk.Toplevel(self.root)
         preview.title(f"Invoice Preview: {inv_num}")
         preview.geometry("750x650")
+        self._center_dialog(preview)
 
         # Canvas-based clean preview
         canvas = tk.Canvas(preview, bg="white")
@@ -2017,7 +2104,7 @@ class BookkeepingApp:
 
         y = 20
         # Company logo (top-left corner)
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        logo_path = os.path.join(APP_DIR, "logo.png")
         if os.path.exists(logo_path):
             logo_img = PILImage.open(logo_path)
             logo_img.thumbnail((70, 70))
@@ -2132,14 +2219,14 @@ class BookkeepingApp:
         _, inv_num, inv_type, rec_type, rec_id, week, dfrom, dto, created, status, pay_method, pay_notes, total = inv
         recipient_name = db.get_recipient_name(rec_type, rec_id)
         is_primary = (inv_type == "Primary")
-        company = db.load_company_info()
+        company = db.load_company_info(self.user_id)
         jobs = db.get_invoice_jobs(invoice_id)
 
         doc = SimpleDocTemplate(filepath, pagesize=letter, topMargin=0.5 * inch)
         styles = getSampleStyleSheet()
         elements = []
 
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        logo_path = os.path.join(APP_DIR, "logo.png")
         header_style = ParagraphStyle("H", parent=styles["Heading1"], fontSize=16, spaceAfter=4, fontName="Helvetica-Bold")
         sub_style = ParagraphStyle("S", parent=styles["Normal"], fontSize=10, spaceAfter=2, fontName="Helvetica-Bold")
         title_style = ParagraphStyle("T", parent=styles["Heading2"], fontSize=12, spaceAfter=6)
@@ -2232,6 +2319,7 @@ class BookkeepingApp:
         toolbar = ttk.Frame(frame)
         toolbar.pack(fill="x", pady=(0, 5))
         ttk.Button(toolbar, text="Add Service", command=self._add_service_dialog).pack(side="left", padx=5)
+        ttk.Button(toolbar, text="Edit Selected", command=self._edit_service_dialog).pack(side="left", padx=5)
         ttk.Button(toolbar, text="Delete Selected", command=self._delete_service).pack(side="left", padx=5)
 
         tree_frame = ttk.Frame(frame)
@@ -2239,10 +2327,10 @@ class BookkeepingApp:
 
         cols = ("ID", "Service Name")
         self.service_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=16)
-        self.service_tree.heading("ID", text="ID")
-        self.service_tree.heading("Service Name", text="Service Name")
-        self.service_tree.column("ID", width=50)
-        self.service_tree.column("Service Name", width=400)
+        self.service_tree.heading("ID", text="ID", anchor="center")
+        self.service_tree.heading("Service Name", text="Service Name", anchor="center")
+        self.service_tree.column("ID", width=50, anchor="center", stretch=True)
+        self.service_tree.column("Service Name", width=400, anchor="center", stretch=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.service_tree.yview)
         self.service_tree.configure(yscrollcommand=scrollbar.set)
@@ -2254,7 +2342,7 @@ class BookkeepingApp:
     def _refresh_services(self):
         for row in self.service_tree.get_children():
             self.service_tree.delete(row)
-        services = db.get_services()
+        services = db.get_services(user_id=self.user_id)
         for s in services:
             self.service_tree.insert("", "end", iid=s[0], values=(s[0], s[1]))
 
@@ -2264,6 +2352,7 @@ class BookkeepingApp:
         dialog.geometry("350x160")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         ttk.Label(dialog, text="Service Name:").pack(pady=(15, 5))
@@ -2274,11 +2363,47 @@ class BookkeepingApp:
             name = name_entry.get().strip()
             if not name:
                 return
-            if db.add_service(name):
+            if db.add_service(name, user_id=self.user_id):
                 dialog.destroy()
                 self._refresh_services()
             else:
                 messagebox.showwarning("Exists", f"Service '{name}' already exists.")
+
+        ttk.Button(dialog, text="Save", command=save).pack(pady=10)
+
+    def _edit_service_dialog(self):
+        selected = self.service_tree.focus()
+        if not selected:
+            messagebox.showwarning("No Selection", "Select a service to edit.")
+            return
+        current_name = self.service_tree.item(selected, "values")[1]
+        service_id = int(selected)
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Edit Service")
+        dialog.geometry("380x160")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self._center_dialog(dialog)
+        dialog.resizable(False, False)
+
+        ttk.Label(dialog, text="Service Name:").pack(pady=(20, 5))
+        name_entry = ttk.Entry(dialog, width=35)
+        name_entry.insert(0, current_name)
+        name_entry.pack(pady=5)
+        name_entry.select_range(0, tk.END)
+        name_entry.focus()
+
+        def save():
+            new_name = name_entry.get().strip()
+            if not new_name:
+                return
+            if new_name == current_name:
+                dialog.destroy()
+                return
+            db.update_service(service_id, new_name)
+            dialog.destroy()
+            self._refresh_services()
 
         ttk.Button(dialog, text="Save", command=save).pack(pady=10)
 
@@ -2377,20 +2502,20 @@ class BookkeepingApp:
 
         cols = ("Date", "Subcontractor", "Amount", "Type", "Period From", "Period To", "Notes")
         self.sub_pay_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=16)
-        self.sub_pay_tree.heading("Date", text="Date")
-        self.sub_pay_tree.heading("Subcontractor", text="Subcontractor")
-        self.sub_pay_tree.heading("Amount", text="Amount")
-        self.sub_pay_tree.heading("Type", text="Type")
-        self.sub_pay_tree.heading("Period From", text="Period From")
-        self.sub_pay_tree.heading("Period To", text="Period To")
-        self.sub_pay_tree.heading("Notes", text="Notes")
-        self.sub_pay_tree.column("Date", width=90)
-        self.sub_pay_tree.column("Subcontractor", width=150)
-        self.sub_pay_tree.column("Amount", width=100)
-        self.sub_pay_tree.column("Type", width=70)
-        self.sub_pay_tree.column("Period From", width=90)
-        self.sub_pay_tree.column("Period To", width=90)
-        self.sub_pay_tree.column("Notes", width=150)
+        self.sub_pay_tree.heading("Date", text="Date", anchor="center")
+        self.sub_pay_tree.heading("Subcontractor", text="Subcontractor", anchor="center")
+        self.sub_pay_tree.heading("Amount", text="Amount", anchor="center")
+        self.sub_pay_tree.heading("Type", text="Type", anchor="center")
+        self.sub_pay_tree.heading("Period From", text="Period From", anchor="center")
+        self.sub_pay_tree.heading("Period To", text="Period To", anchor="center")
+        self.sub_pay_tree.heading("Notes", text="Notes", anchor="center")
+        self.sub_pay_tree.column("Date", width=90, anchor="center", stretch=True)
+        self.sub_pay_tree.column("Subcontractor", width=150, anchor="center", stretch=True)
+        self.sub_pay_tree.column("Amount", width=100, anchor="center", stretch=True)
+        self.sub_pay_tree.column("Type", width=70, anchor="center", stretch=True)
+        self.sub_pay_tree.column("Period From", width=90, anchor="center", stretch=True)
+        self.sub_pay_tree.column("Period To", width=90, anchor="center", stretch=True)
+        self.sub_pay_tree.column("Notes", width=150, anchor="center", stretch=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.sub_pay_tree.yview)
         self.sub_pay_tree.configure(yscrollcommand=scrollbar.set)
@@ -2406,7 +2531,7 @@ class BookkeepingApp:
         self._refresh_sub_payments()
 
     def _update_sub_pay_filter_list(self):
-        subs = db.get_contractors("Subcontractor")
+        subs = db.get_contractors("Subcontractor", user_id=self.user_id)
         names = ["All"] + [c[2] for c in subs]
         self._sub_pay_combo["values"] = names
         self._sub_pay_ids = {c[2]: c[0] for c in subs}
@@ -2427,7 +2552,7 @@ class BookkeepingApp:
         start = self._sub_pay_from_var.get().strip() or None
         end = self._sub_pay_to_var.get().strip() or None
 
-        payments = db.get_sub_payments(start_date=start, end_date=end, contractor_id=contractor_id)
+        payments = db.get_sub_payments(start_date=start, end_date=end, contractor_id=contractor_id, user_id=self.user_id)
         total = 0
         for p in payments:
             pid, name, amount, pdate, ptype, pfrom, pto, notes = p
@@ -2442,6 +2567,7 @@ class BookkeepingApp:
         dialog.geometry("500x420")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         pad = {"padx": 10, "pady": 7}
@@ -2453,7 +2579,7 @@ class BookkeepingApp:
 
         # Subcontractor dropdown
         ttk.Label(form, text="Subcontractor:").grid(row=0, column=0, sticky="e", **pad)
-        subs = db.get_contractors("Subcontractor")
+        subs = db.get_contractors("Subcontractor", user_id=self.user_id)
         sub_names = [c[2] for c in subs]
         sub_ids = [c[0] for c in subs]
         sub_var = tk.StringVar()
@@ -2513,6 +2639,7 @@ class BookkeepingApp:
                 period_from=pfrom_var.get().strip() or None,
                 period_to=pto_var.get().strip() or None,
                 notes=notes_entry.get().strip(),
+                user_id=self.user_id,
             )
             dialog.destroy()
             self._refresh_sub_payments()
@@ -2535,6 +2662,7 @@ class BookkeepingApp:
         dialog.geometry("420x200")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         ttk.Label(dialog, text="Generate Subcontractor Payment Statement", font=("Segoe UI", 11, "bold")).pack(pady=(15, 10))
@@ -2561,18 +2689,19 @@ class BookkeepingApp:
     def _preview_sub_statement(self, date_from, date_to):
         from export_reports import _format_date_display
 
-        summary = db.get_sub_payment_summary(date_from, date_to)
+        summary = db.get_sub_payment_summary(date_from, date_to, user_id=self.user_id)
         grand_total = sum(row[1] for row in summary)
 
         preview = tk.Toplevel(self.root)
         preview.title("Subcontractor Payment Statement")
         preview.geometry("650x500")
+        self._center_dialog(preview)
 
         canvas = tk.Canvas(preview, bg="white")
         canvas.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
-        company = db.load_company_info()
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        company = db.load_company_info(self.user_id)
+        logo_path = os.path.join(APP_DIR, "logo.png")
 
         y = 20
         if os.path.exists(logo_path):
@@ -2657,7 +2786,7 @@ class BookkeepingApp:
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from export_reports import _format_date_display
 
-        company = db.load_company_info()
+        company = db.load_company_info(self.user_id)
         doc = SimpleDocTemplate(filepath, pagesize=letter, topMargin=0.5 * inch)
         styles = getSampleStyleSheet()
         elements = []
@@ -2677,7 +2806,7 @@ class BookkeepingApp:
         if company.get("HIC Number"):
             info_parts.append(f"HIC# {company['HIC Number']}")
 
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        logo_path = os.path.join(APP_DIR, "logo.png")
         if os.path.exists(logo_path):
             logo = Image(logo_path, width=0.9 * inch, height=0.9 * inch)
             header_content = []
@@ -2729,6 +2858,7 @@ class BookkeepingApp:
         dialog.geometry("450x260")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         ttk.Label(dialog, text="Individual Subcontractor Statement", font=("Segoe UI", 11, "bold")).pack(pady=(15, 10))
@@ -2737,7 +2867,7 @@ class BookkeepingApp:
         form.pack(fill="x", padx=20)
 
         ttk.Label(form, text="Subcontractor:").grid(row=0, column=0, sticky="e", padx=8, pady=8)
-        subs = db.get_contractors("Subcontractor")
+        subs = db.get_contractors("Subcontractor", user_id=self.user_id)
         sub_names = [c[2] for c in subs]
         sub_ids = [c[0] for c in subs]
         sub_var = tk.StringVar()
@@ -2769,18 +2899,19 @@ class BookkeepingApp:
     def _preview_individual_sub_statement(self, contractor_id, contractor_name, date_from, date_to):
         from export_reports import _format_date_display
 
-        payments = db.get_sub_payments(start_date=date_from, end_date=date_to, contractor_id=contractor_id)
+        payments = db.get_sub_payments(start_date=date_from, end_date=date_to, contractor_id=contractor_id, user_id=self.user_id)
         grand_total = sum(p[2] for p in payments)
 
         preview = tk.Toplevel(self.root)
         preview.title(f"Statement: {contractor_name}")
         preview.geometry("700x550")
+        self._center_dialog(preview)
 
         canvas = tk.Canvas(preview, bg="white")
         canvas.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
-        company = db.load_company_info()
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        company = db.load_company_info(self.user_id)
+        logo_path = os.path.join(APP_DIR, "logo.png")
 
         y = 20
         if os.path.exists(logo_path):
@@ -2883,7 +3014,7 @@ class BookkeepingApp:
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from export_reports import _format_date_display
 
-        company = db.load_company_info()
+        company = db.load_company_info(self.user_id)
         doc = SimpleDocTemplate(filepath, pagesize=letter, topMargin=0.5 * inch)
         styles = getSampleStyleSheet()
         elements = []
@@ -2903,7 +3034,7 @@ class BookkeepingApp:
         if company.get("HIC Number"):
             info_parts.append(f"HIC# {company['HIC Number']}")
 
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        logo_path = os.path.join(APP_DIR, "logo.png")
         if os.path.exists(logo_path):
             logo = Image(logo_path, width=0.9 * inch, height=0.9 * inch)
             header_content = []
@@ -2967,6 +3098,7 @@ class BookkeepingApp:
         dialog.geometry("450x240")
         dialog.transient(self.root)
         dialog.grab_set()
+        self._center_dialog(dialog)
         dialog.resizable(False, False)
 
         ttk.Label(dialog, text="Profit & Loss Statement", font=("Segoe UI", 12, "bold")).pack(pady=(15, 10))
@@ -2996,7 +3128,7 @@ class BookkeepingApp:
     def _preview_pl(self, date_from, date_to, compare):
         from export_reports import _compute_pl, _prior_period, _format_date_display
 
-        transactions = db.get_transactions(date_from, date_to)
+        transactions = db.get_transactions(date_from, date_to, user_id=self.user_id)
         income, cogs, expenses = _compute_pl(transactions)
 
         total_income = sum(income.values())
@@ -3011,18 +3143,19 @@ class BookkeepingApp:
         prior_expenses = {}
         if compare:
             prior_from, prior_to = _prior_period(date_from, date_to)
-            prior_txns = db.get_transactions(prior_from, prior_to)
+            prior_txns = db.get_transactions(prior_from, prior_to, user_id=self.user_id)
             prior_income, prior_cogs, prior_expenses = _compute_pl(prior_txns)
 
         preview = tk.Toplevel(self.root)
         preview.title("Profit & Loss Preview")
         preview.geometry("750x600")
+        self._center_dialog(preview)
 
         canvas = tk.Canvas(preview, bg="white")
         canvas.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
-        company = db.load_company_info()
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        company = db.load_company_info(self.user_id)
+        logo_path = os.path.join(APP_DIR, "logo.png")
 
         y = 20
         if os.path.exists(logo_path):
@@ -3130,13 +3263,13 @@ class BookkeepingApp:
         def export_pdf():
             filepath = filedialog.asksaveasfilename(parent=preview, title="Save as PDF", defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
             if filepath:
-                export_reports.export_pl_pdf(filepath, date_from, date_to, compare=compare)
+                export_reports.export_pl_pdf(filepath, date_from, date_to, compare=compare, user_id=self.user_id)
                 messagebox.showinfo("Saved", f"PDF saved to:\n{filepath}", parent=preview)
 
         def export_csv():
             filepath = filedialog.asksaveasfilename(parent=preview, title="Save as CSV", defaultextension=".csv", filetypes=[("CSV", "*.csv")])
             if filepath:
-                export_reports.export_pl_csv(filepath, date_from, date_to, compare=compare)
+                export_reports.export_pl_csv(filepath, date_from, date_to, compare=compare, user_id=self.user_id)
                 messagebox.showinfo("Saved", f"CSV saved to:\n{filepath}", parent=preview)
 
         ttk.Button(btn_frame, text="Export PDF", command=export_pdf).pack(side="left", padx=5)
@@ -3147,7 +3280,7 @@ class BookkeepingApp:
         self._preview_balance_sheet()
 
     def _preview_balance_sheet(self):
-        transactions = db.get_transactions()
+        transactions = db.get_transactions(user_id=self.user_id)
         from export_reports import _compute_bs
         assets, liabilities, equity = _compute_bs(transactions)
 
@@ -3158,12 +3291,13 @@ class BookkeepingApp:
         preview = tk.Toplevel(self.root)
         preview.title("Balance Sheet Preview")
         preview.geometry("650x550")
+        self._center_dialog(preview)
 
         canvas = tk.Canvas(preview, bg="white")
         canvas.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
-        company = db.load_company_info()
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        company = db.load_company_info(self.user_id)
+        logo_path = os.path.join(APP_DIR, "logo.png")
 
         y = 20
         if os.path.exists(logo_path):
@@ -3241,13 +3375,13 @@ class BookkeepingApp:
         def export_pdf():
             filepath = filedialog.asksaveasfilename(parent=preview, title="Save as PDF", defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
             if filepath:
-                export_reports.export_bs_pdf(filepath)
+                export_reports.export_bs_pdf(filepath, user_id=self.user_id)
                 messagebox.showinfo("Saved", f"PDF saved to:\n{filepath}", parent=preview)
 
         def export_csv():
             filepath = filedialog.asksaveasfilename(parent=preview, title="Save as CSV", defaultextension=".csv", filetypes=[("CSV", "*.csv")])
             if filepath:
-                export_reports.export_bs_csv(filepath)
+                export_reports.export_bs_csv(filepath, user_id=self.user_id)
                 messagebox.showinfo("Saved", f"CSV saved to:\n{filepath}", parent=preview)
 
         ttk.Button(btn_frame, text="Export PDF", command=export_pdf).pack(side="left", padx=5)
@@ -3256,6 +3390,13 @@ class BookkeepingApp:
 
 
 if __name__ == "__main__":
+    db.backup_database()
+    db.init_db()
+
+    login = auth_ui.LoginWindow()
+    if login.user_id is None:
+        sys.exit(0)
+
     root = tk.Tk()
-    app = BookkeepingApp(root)
+    app = BookkeepingApp(root, login.user_id)
     root.mainloop()

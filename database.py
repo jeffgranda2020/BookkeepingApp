@@ -1,8 +1,25 @@
 import sqlite3
+import sys
 import os
+import hashlib
+import secrets
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bookkeeping.db")
+
+def _app_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+DB_PATH = os.path.join(_app_dir(), "bookkeeping.db")
+DB_BACKUP_PATH = os.path.join(_app_dir(), "bookkeeping_backup.db")
+
+
+def backup_database():
+    if os.path.exists(DB_PATH):
+        import shutil
+        shutil.copy2(DB_PATH, DB_BACKUP_PATH)
 
 DEFAULT_CATEGORIES = [
     # Income
@@ -64,14 +81,198 @@ def get_connection():
     return conn
 
 
+def _migrate_add_user_id(cursor):
+    tables_needing_user_id = [
+        "company_info", "categories", "transactions", "contractors",
+        "clients", "services", "invoices", "invoice_jobs", "invoice_lines", "sub_payments"
+    ]
+    for table in tables_needing_user_id:
+        try:
+            cursor.execute(f"SELECT user_id FROM {table} LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
+            except sqlite3.OperationalError:
+                pass
+
+
+def has_legacy_data():
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT COUNT(*) FROM transactions WHERE user_id IS NULL")
+        txn_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM contractors WHERE user_id IS NULL")
+        con_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM clients WHERE user_id IS NULL")
+        cli_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM invoices WHERE user_id IS NULL")
+        inv_count = c.fetchone()[0]
+        conn.close()
+        return (txn_count + con_count + cli_count + inv_count) > 0
+    except sqlite3.OperationalError:
+        conn.close()
+        return False
+
+
+def adopt_legacy_data(user_id):
+    conn = get_connection()
+    c = conn.cursor()
+    tables = [
+        "company_info", "categories", "transactions", "contractors",
+        "clients", "services", "invoices", "invoice_jobs", "invoice_lines", "sub_payments"
+    ]
+    for table in tables:
+        c.execute(f"UPDATE {table} SET user_id = ? WHERE user_id IS NULL", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def _hash_password(password, salt):
+    return hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000).hex()
+
+
+def create_user(username, password):
+    salt = secrets.token_hex(16)
+    password_hash = _hash_password(password, salt)
+    created = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "INSERT INTO users (username, password_hash, salt, created_date) VALUES (?, ?, ?, ?)",
+            (username, password_hash, salt, created),
+        )
+        conn.commit()
+        user_id = c.lastrowid
+        conn.close()
+        return user_id
+    except sqlite3.IntegrityError:
+        conn.close()
+        return None
+
+
+def verify_user(username, password):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, password_hash, salt FROM users WHERE username = ?", (username,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    user_id, stored_hash, salt = row
+    if _hash_password(password, salt) == stored_hash:
+        return user_id
+    return None
+
+
+def get_user_count():
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+
+def save_security_questions(user_id, qa_pairs):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM security_questions WHERE user_id = ?", (user_id,))
+    for question, answer in qa_pairs:
+        salt = secrets.token_hex(16)
+        answer_hash = _hash_password(answer.strip().lower(), salt)
+        c.execute(
+            "INSERT INTO security_questions (user_id, question, answer_hash, salt) VALUES (?, ?, ?, ?)",
+            (user_id, question, answer_hash, salt),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_security_questions(username):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT id FROM users WHERE username = ?", (username,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return None
+    user_id = row[0]
+    c.execute("SELECT question, answer_hash, salt FROM security_questions WHERE user_id = ?", (user_id,))
+    questions = c.fetchall()
+    conn.close()
+    if not questions:
+        return None
+    return user_id, questions
+
+
+def verify_security_answers(user_id, answers):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT answer_hash, salt FROM security_questions WHERE user_id = ? ORDER BY id", (user_id,))
+    rows = c.fetchall()
+    conn.close()
+    if len(answers) != len(rows):
+        return False
+    for answer, (stored_hash, salt) in zip(answers, rows):
+        if _hash_password(answer.strip().lower(), salt) != stored_hash:
+            return False
+    return True
+
+
+def reset_password(user_id, new_password):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT password_hash, salt FROM users WHERE id = ?", (user_id,))
+    old_hash, old_salt = c.fetchone()
+    if _hash_password(new_password, old_salt) == old_hash:
+        conn.close()
+        return False
+    new_salt = secrets.token_hex(16)
+    new_hash = _hash_password(new_password, new_salt)
+    c.execute("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?", (new_hash, new_salt, user_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
 def init_db():
     conn = get_connection()
     c = conn.cursor()
 
     c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            created_date TEXT NOT NULL
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS security_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            question TEXT NOT NULL,
+            answer_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    # Add user_id column to existing tables if not present
+    _migrate_add_user_id(c)
+
+    c.execute("""
         CREATE TABLE IF NOT EXISTS company_info (
-            key TEXT PRIMARY KEY,
-            value TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL,
+            value TEXT,
+            user_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            UNIQUE(key, user_id)
         )
     """)
 
@@ -80,7 +281,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category_type TEXT NOT NULL,
             name TEXT NOT NULL,
-            UNIQUE(category_type, name)
+            user_id INTEGER,
+            UNIQUE(category_type, name, user_id)
         )
     """)
 
@@ -92,7 +294,9 @@ def init_db():
             amount REAL NOT NULL,
             category_id INTEGER,
             source TEXT,
-            FOREIGN KEY (category_id) REFERENCES categories(id)
+            user_id INTEGER,
+            FOREIGN KEY (category_id) REFERENCES categories(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
@@ -100,7 +304,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS contractors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             contractor_type TEXT NOT NULL,
-            code_id TEXT NOT NULL UNIQUE,
+            code_id TEXT NOT NULL,
             name TEXT NOT NULL,
             street TEXT,
             city TEXT,
@@ -109,34 +313,40 @@ def init_db():
             phone TEXT,
             email TEXT,
             ein TEXT,
-            ssn_tin TEXT
+            ssn_tin TEXT,
+            user_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS clients (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code_id TEXT NOT NULL UNIQUE,
+            code_id TEXT NOT NULL,
             name TEXT NOT NULL,
             street TEXT,
             city TEXT,
             state TEXT,
             zipcode TEXT,
-            phone TEXT
+            phone TEXT,
+            user_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS services (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE
+            name TEXT NOT NULL,
+            user_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS invoices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            invoice_number TEXT NOT NULL UNIQUE,
+            invoice_number TEXT NOT NULL,
             invoice_type TEXT NOT NULL,
             recipient_type TEXT NOT NULL,
             recipient_id INTEGER NOT NULL,
@@ -147,7 +357,9 @@ def init_db():
             status TEXT DEFAULT 'Unpaid',
             payment_method TEXT,
             payment_notes TEXT,
-            total REAL DEFAULT 0
+            total REAL DEFAULT 0,
+            user_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
@@ -183,14 +395,23 @@ def init_db():
             period_from TEXT,
             period_to TEXT,
             notes TEXT,
-            FOREIGN KEY (contractor_id) REFERENCES contractors(id)
+            user_id INTEGER,
+            FOREIGN KEY (contractor_id) REFERENCES contractors(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
+    conn.commit()
+    conn.close()
+
+
+def seed_defaults_for_user(user_id):
+    conn = get_connection()
+    c = conn.cursor()
     for cat_type, name in DEFAULT_CATEGORIES:
         c.execute(
-            "INSERT OR IGNORE INTO categories (category_type, name) VALUES (?, ?)",
-            (cat_type, name),
+            "INSERT OR IGNORE INTO categories (category_type, name, user_id) VALUES (?, ?, ?)",
+            (cat_type, name, user_id),
         )
 
     default_services = [
@@ -206,68 +427,73 @@ def init_db():
         "Custom Work", "Trip Charge", "Tread",
     ]
     for svc in default_services:
-        c.execute("INSERT OR IGNORE INTO services (name) VALUES (?)", (svc,))
+        c.execute(
+            "INSERT OR IGNORE INTO services (name, user_id) VALUES (?, ?)",
+            (svc, user_id),
+        )
 
     conn.commit()
     conn.close()
 
 
-def save_company_info(data: dict):
+def save_company_info(data: dict, user_id=None):
     conn = get_connection()
     c = conn.cursor()
     for key, value in data.items():
+        c.execute("DELETE FROM company_info WHERE key = ? AND user_id = ?", (key, user_id))
         c.execute(
-            "INSERT OR REPLACE INTO company_info (key, value) VALUES (?, ?)",
-            (key, value),
+            "INSERT INTO company_info (key, value, user_id) VALUES (?, ?, ?)",
+            (key, value, user_id),
         )
     conn.commit()
     conn.close()
 
 
-def load_company_info() -> dict:
+def load_company_info(user_id=None) -> dict:
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT key, value FROM company_info")
+    c.execute("SELECT key, value FROM company_info WHERE user_id = ?", (user_id,))
     data = dict(c.fetchall())
     conn.close()
     return data
 
 
-def get_categories(category_type=None):
+def get_categories(category_type=None, user_id=None):
     conn = get_connection()
     c = conn.cursor()
     if category_type:
-        c.execute("SELECT id, category_type, name FROM categories WHERE category_type = ? ORDER BY name", (category_type,))
+        c.execute("SELECT id, category_type, name FROM categories WHERE category_type = ? AND user_id = ? ORDER BY name", (category_type, user_id))
     else:
-        c.execute("SELECT id, category_type, name FROM categories ORDER BY category_type, name")
+        c.execute("SELECT id, category_type, name FROM categories WHERE user_id = ? ORDER BY category_type, name", (user_id,))
     rows = c.fetchall()
     conn.close()
     return rows
 
 
-def add_transaction(date, description, amount, category_id, source="Manual"):
+def add_transaction(date, description, amount, category_id, source="Manual", user_id=None):
     conn = get_connection()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO transactions (date, description, amount, category_id, source) VALUES (?, ?, ?, ?, ?)",
-        (date, description, amount, category_id, source),
+        "INSERT INTO transactions (date, description, amount, category_id, source, user_id) VALUES (?, ?, ?, ?, ?, ?)",
+        (date, description, amount, category_id, source, user_id),
     )
     conn.commit()
     conn.close()
 
 
-def add_transactions_bulk(rows):
+def add_transactions_bulk(rows, user_id=None):
     conn = get_connection()
     c = conn.cursor()
+    rows_with_user = [(r[0], r[1], r[2], r[3], r[4], user_id) for r in rows]
     c.executemany(
-        "INSERT INTO transactions (date, description, amount, category_id, source) VALUES (?, ?, ?, ?, ?)",
-        rows,
+        "INSERT INTO transactions (date, description, amount, category_id, source, user_id) VALUES (?, ?, ?, ?, ?, ?)",
+        rows_with_user,
     )
     conn.commit()
     conn.close()
 
 
-def get_transactions(start_date=None, end_date=None):
+def get_transactions(start_date=None, end_date=None, user_id=None):
     conn = get_connection()
     c = conn.cursor()
     query = """
@@ -276,15 +502,15 @@ def get_transactions(start_date=None, end_date=None):
         LEFT JOIN categories c ON t.category_id = c.id
     """
     params = []
-    conditions = []
+    conditions = ["t.user_id = ?"]
+    params.append(user_id)
     if start_date:
         conditions.append("t.date >= ?")
         params.append(start_date)
     if end_date:
         conditions.append("t.date <= ?")
         params.append(end_date)
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
+    query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY t.date DESC"
     c.execute(query, params)
     rows = c.fetchall()
@@ -300,12 +526,21 @@ def update_transaction_category(transaction_id, category_id):
     conn.close()
 
 
-def add_category(category_type, name):
+def delete_transactions(transaction_ids):
+    conn = get_connection()
+    c = conn.cursor()
+    for tid in transaction_ids:
+        c.execute("DELETE FROM transactions WHERE id = ?", (tid,))
+    conn.commit()
+    conn.close()
+
+
+def add_category(category_type, name, user_id=None):
     conn = get_connection()
     c = conn.cursor()
     c.execute(
-        "INSERT OR IGNORE INTO categories (category_type, name) VALUES (?, ?)",
-        (category_type, name),
+        "INSERT OR IGNORE INTO categories (category_type, name, user_id) VALUES (?, ?, ?)",
+        (category_type, name, user_id),
     )
     conn.commit()
     inserted = c.rowcount > 0
@@ -326,10 +561,10 @@ def _generate_code_id(name):
     return code
 
 
-def _ensure_unique_code(code):
+def _ensure_unique_code(code, user_id=None):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT code_id FROM contractors WHERE code_id LIKE ?", (code + "%",))
+    c.execute("SELECT code_id FROM contractors WHERE code_id LIKE ? AND user_id = ?", (code + "%", user_id))
     existing = [r[0] for r in c.fetchall()]
     conn.close()
 
@@ -342,29 +577,29 @@ def _ensure_unique_code(code):
     return f"{code}{i}"
 
 
-def add_contractor(contractor_type, name, street="", city="", state="", zipcode="", phone="", email="", ein="", ssn_tin=""):
+def add_contractor(contractor_type, name, street="", city="", state="", zipcode="", phone="", email="", ein="", ssn_tin="", user_id=None):
     code = _generate_code_id(name)
-    code = _ensure_unique_code(code)
+    code = _ensure_unique_code(code, user_id)
 
     conn = get_connection()
     c = conn.cursor()
     c.execute(
-        """INSERT INTO contractors (contractor_type, code_id, name, street, city, state, zipcode, phone, email, ein, ssn_tin)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (contractor_type, code, name, street, city, state, zipcode, phone, email, ein, ssn_tin),
+        """INSERT INTO contractors (contractor_type, code_id, name, street, city, state, zipcode, phone, email, ein, ssn_tin, user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (contractor_type, code, name, street, city, state, zipcode, phone, email, ein, ssn_tin, user_id),
     )
     conn.commit()
     conn.close()
     return code
 
 
-def get_contractors(contractor_type=None):
+def get_contractors(contractor_type=None, user_id=None):
     conn = get_connection()
     c = conn.cursor()
     if contractor_type:
-        c.execute("SELECT id, code_id, name, street, city, state, zipcode, phone, email, ein, ssn_tin FROM contractors WHERE contractor_type = ? ORDER BY name", (contractor_type,))
+        c.execute("SELECT id, code_id, name, street, city, state, zipcode, phone, email, ein, ssn_tin FROM contractors WHERE contractor_type = ? AND user_id = ? ORDER BY name", (contractor_type, user_id))
     else:
-        c.execute("SELECT id, contractor_type, code_id, name, street, city, state, zipcode, phone, email, ein, ssn_tin FROM contractors ORDER BY contractor_type, name")
+        c.execute("SELECT id, contractor_type, code_id, name, street, city, state, zipcode, phone, email, ein, ssn_tin FROM contractors WHERE user_id = ? ORDER BY contractor_type, name", (user_id,))
     rows = c.fetchall()
     conn.close()
     return rows
@@ -380,10 +615,10 @@ def delete_contractor(contractor_id):
 
 # ─── Clients (Individual) ───
 
-def _ensure_unique_client_code(code):
+def _ensure_unique_client_code(code, user_id=None):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT code_id FROM clients WHERE code_id LIKE ?", (code + "%",))
+    c.execute("SELECT code_id FROM clients WHERE code_id LIKE ? AND user_id = ?", (code + "%", user_id))
     existing = [r[0] for r in c.fetchall()]
     conn.close()
     if code not in existing:
@@ -394,24 +629,24 @@ def _ensure_unique_client_code(code):
     return f"{code}{i}"
 
 
-def add_client(name, street="", city="", state="", zipcode="", phone=""):
+def add_client(name, street="", city="", state="", zipcode="", phone="", user_id=None):
     code = _generate_code_id(name)
-    code = _ensure_unique_client_code(code)
+    code = _ensure_unique_client_code(code, user_id)
     conn = get_connection()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO clients (code_id, name, street, city, state, zipcode, phone) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (code, name, street, city, state, zipcode, phone),
+        "INSERT INTO clients (code_id, name, street, city, state, zipcode, phone, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (code, name, street, city, state, zipcode, phone, user_id),
     )
     conn.commit()
     conn.close()
     return code
 
 
-def get_clients():
+def get_clients(user_id=None):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT id, code_id, name, street, city, state, zipcode, phone FROM clients ORDER BY name")
+    c.execute("SELECT id, code_id, name, street, city, state, zipcode, phone FROM clients WHERE user_id = ? ORDER BY name", (user_id,))
     rows = c.fetchall()
     conn.close()
     return rows
@@ -427,10 +662,10 @@ def delete_client(client_id):
 
 # ─── Invoices ───
 
-def _next_invoice_number(prefix="INV"):
+def _next_invoice_number(prefix="INV", user_id=None):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT invoice_number FROM invoices WHERE invoice_number LIKE ? ORDER BY id DESC LIMIT 1", (prefix + "-%",))
+    c.execute("SELECT invoice_number FROM invoices WHERE invoice_number LIKE ? AND user_id = ? ORDER BY id DESC LIMIT 1", (prefix + "-%", user_id))
     row = c.fetchone()
     conn.close()
     if row:
@@ -442,17 +677,17 @@ def _next_invoice_number(prefix="INV"):
     return f"{prefix}-0001"
 
 
-def create_invoice(invoice_type, recipient_type, recipient_id, week_number=None, date_from=None, date_to=None):
+def create_invoice(invoice_type, recipient_type, recipient_id, week_number=None, date_from=None, date_to=None, user_id=None):
     prefix = "WB" if invoice_type == "Primary" else "INV"
-    inv_num = _next_invoice_number(prefix)
+    inv_num = _next_invoice_number(prefix, user_id)
     created = datetime.now().strftime("%Y-%m-%d")
 
     conn = get_connection()
     c = conn.cursor()
     c.execute(
-        """INSERT INTO invoices (invoice_number, invoice_type, recipient_type, recipient_id, week_number, date_from, date_to, created_date, status, total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Unpaid', 0)""",
-        (inv_num, invoice_type, recipient_type, recipient_id, week_number, date_from, date_to, created),
+        """INSERT INTO invoices (invoice_number, invoice_type, recipient_type, recipient_id, week_number, date_from, date_to, created_date, status, total, user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Unpaid', 0, ?)""",
+        (inv_num, invoice_type, recipient_type, recipient_id, week_number, date_from, date_to, created, user_id),
     )
     invoice_id = c.lastrowid
     conn.commit()
@@ -462,23 +697,31 @@ def create_invoice(invoice_type, recipient_type, recipient_id, week_number=None,
 
 # ─── Services ───
 
-def get_services():
+def get_services(user_id=None):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT id, name FROM services ORDER BY name")
+    c.execute("SELECT id, name FROM services WHERE user_id = ? ORDER BY name", (user_id,))
     rows = c.fetchall()
     conn.close()
     return rows
 
 
-def add_service(name):
+def add_service(name, user_id=None):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO services (name) VALUES (?)", (name,))
+    c.execute("INSERT OR IGNORE INTO services (name, user_id) VALUES (?, ?)", (name, user_id))
     conn.commit()
     inserted = c.rowcount > 0
     conn.close()
     return inserted
+
+
+def update_service(service_id, new_name):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("UPDATE services SET name = ? WHERE id = ?", (new_name, service_id))
+    conn.commit()
+    conn.close()
 
 
 def delete_service(service_id):
@@ -552,13 +795,13 @@ def get_invoice(invoice_id):
     return row
 
 
-def get_invoices(invoice_type=None):
+def get_invoices(invoice_type=None, user_id=None):
     conn = get_connection()
     c = conn.cursor()
     if invoice_type:
-        c.execute("SELECT id, invoice_number, invoice_type, recipient_type, recipient_id, week_number, date_from, date_to, created_date, status, total FROM invoices WHERE invoice_type = ? ORDER BY id DESC", (invoice_type,))
+        c.execute("SELECT id, invoice_number, invoice_type, recipient_type, recipient_id, week_number, date_from, date_to, created_date, status, total FROM invoices WHERE invoice_type = ? AND user_id = ? ORDER BY id DESC", (invoice_type, user_id))
     else:
-        c.execute("SELECT id, invoice_number, invoice_type, recipient_type, recipient_id, week_number, date_from, date_to, created_date, status, total FROM invoices ORDER BY id DESC")
+        c.execute("SELECT id, invoice_number, invoice_type, recipient_type, recipient_id, week_number, date_from, date_to, created_date, status, total FROM invoices WHERE user_id = ? ORDER BY id DESC", (user_id,))
     rows = c.fetchall()
     conn.close()
     return rows
@@ -609,19 +852,19 @@ def get_recipient_name(recipient_type, recipient_id):
 
 # ─── Sub Payments ───
 
-def add_sub_payment(contractor_id, amount, payment_date, payment_type, period_from=None, period_to=None, notes=""):
+def add_sub_payment(contractor_id, amount, payment_date, payment_type, period_from=None, period_to=None, notes="", user_id=None):
     conn = get_connection()
     c = conn.cursor()
     c.execute(
-        """INSERT INTO sub_payments (contractor_id, amount, payment_date, payment_type, period_from, period_to, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (contractor_id, amount, payment_date, payment_type, period_from, period_to, notes),
+        """INSERT INTO sub_payments (contractor_id, amount, payment_date, payment_type, period_from, period_to, notes, user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (contractor_id, amount, payment_date, payment_type, period_from, period_to, notes, user_id),
     )
     conn.commit()
     conn.close()
 
 
-def get_sub_payments(start_date=None, end_date=None, contractor_id=None):
+def get_sub_payments(start_date=None, end_date=None, contractor_id=None, user_id=None):
     conn = get_connection()
     c = conn.cursor()
     query = """
@@ -629,8 +872,8 @@ def get_sub_payments(start_date=None, end_date=None, contractor_id=None):
         FROM sub_payments sp
         JOIN contractors c ON sp.contractor_id = c.id
     """
-    conditions = []
-    params = []
+    conditions = ["sp.user_id = ?"]
+    params = [user_id]
     if start_date:
         conditions.append("sp.payment_date >= ?")
         params.append(start_date)
@@ -640,8 +883,7 @@ def get_sub_payments(start_date=None, end_date=None, contractor_id=None):
     if contractor_id:
         conditions.append("sp.contractor_id = ?")
         params.append(contractor_id)
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
+    query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY sp.payment_date DESC"
     c.execute(query, params)
     rows = c.fetchall()
@@ -657,7 +899,7 @@ def delete_sub_payment(payment_id):
     conn.close()
 
 
-def get_sub_payment_summary(start_date=None, end_date=None):
+def get_sub_payment_summary(start_date=None, end_date=None, user_id=None):
     conn = get_connection()
     c = conn.cursor()
     query = """
@@ -665,16 +907,15 @@ def get_sub_payment_summary(start_date=None, end_date=None):
         FROM sub_payments sp
         JOIN contractors c ON sp.contractor_id = c.id
     """
-    conditions = []
-    params = []
+    conditions = ["sp.user_id = ?"]
+    params = [user_id]
     if start_date:
         conditions.append("sp.payment_date >= ?")
         params.append(start_date)
     if end_date:
         conditions.append("sp.payment_date <= ?")
         params.append(end_date)
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
+    query += " WHERE " + " AND ".join(conditions)
     query += " GROUP BY c.name ORDER BY total DESC"
     c.execute(query, params)
     rows = c.fetchall()

@@ -8,7 +8,10 @@ import json
 
 from version import APP_VERSION, GITHUB_REPO, CHANGELOG
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _parse_version(v):
@@ -86,16 +89,48 @@ def apply_update(downloaded_exe_path):
     else:
         current_exe = os.path.abspath(sys.argv[0])
 
+    pid = os.getpid()
+    app_dir = os.path.dirname(current_exe)
     script_content = f'''@echo off
 echo Updating 5StarBookKeeping...
-timeout /t 2 /nobreak >nul
-copy /Y "{downloaded_exe_path}" "{current_exe}" >nul
-if errorlevel 1 (
-    echo Update failed. Please close the app and try again.
+echo Waiting for app to close...
+:waitloop
+tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto waitloop
+)
+timeout /t 1 /nobreak >nul
+REM Verify downloaded file is valid (at least 1MB)
+for %%A in ("{downloaded_exe_path}") do set filesize=%%~zA
+if %filesize% LSS 1000000 (
+    echo Update file appears corrupt. Aborting to protect your data.
+    del "{downloaded_exe_path}" >nul 2>&1
     pause
     exit /b 1
 )
+REM Backup current exe before replacing
+if exist "{current_exe}" copy /Y "{current_exe}" "{current_exe}.bak" >nul 2>&1
+set retries=0
+:copyloop
+copy /Y "{downloaded_exe_path}" "{current_exe}" >nul 2>&1
+if errorlevel 1 (
+    set /a retries+=1
+    if %retries% GEQ 10 (
+        echo Update failed. Restoring previous version...
+        if exist "{current_exe}.bak" copy /Y "{current_exe}.bak" "{current_exe}" >nul 2>&1
+        pause
+        exit /b 1
+    )
+    timeout /t 2 /nobreak >nul
+    goto copyloop
+)
+REM Clean up
 del "{downloaded_exe_path}" >nul 2>&1
+del "{current_exe}.bak" >nul 2>&1
+echo Update complete. Your data (bookkeeping.db) is untouched.
+echo Starting updated app...
+timeout /t 3 /nobreak >nul
 start "" "{current_exe}"
 del "%~f0" >nul 2>&1
 '''

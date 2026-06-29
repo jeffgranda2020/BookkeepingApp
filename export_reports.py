@@ -1,4 +1,5 @@
 import os
+import sys
 import csv
 import re
 from datetime import datetime, timedelta
@@ -12,7 +13,10 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 import database as db
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(APP_DIR, "logo.png")
 
 
@@ -23,8 +27,8 @@ def _format_phone(phone):
     return phone or ""
 
 
-def _get_company_header():
-    info = db.load_company_info()
+def _get_company_header(user_id=None):
+    info = db.load_company_info(user_id)
     return {
         "name": info.get("Company Name", "").upper(),
         "phone": _format_phone(info.get("Phone Number", "")),
@@ -55,8 +59,8 @@ def _format_date_display(date_str):
 
 # ─── PDF Export ───
 
-def _build_pdf_header(elements, styles, title, date_from=None, date_to=None):
-    company = _get_company_header()
+def _build_pdf_header(elements, styles, title, date_from=None, date_to=None, user_id=None):
+    company = _get_company_header(user_id)
 
     header_style = ParagraphStyle("CompanyHeader", parent=styles["Heading1"], fontSize=16, spaceAfter=4, fontName="Helvetica-Bold")
     sub_style = ParagraphStyle("CompanySub", parent=styles["Normal"], fontSize=10, spaceAfter=2, fontName="Helvetica-Bold")
@@ -107,8 +111,8 @@ def _build_pdf_header(elements, styles, title, date_from=None, date_to=None):
     elements.append(Spacer(1, 15))
 
 
-def export_pl_pdf(filepath, date_from=None, date_to=None, compare=False):
-    transactions = db.get_transactions(date_from, date_to)
+def export_pl_pdf(filepath, date_from=None, date_to=None, compare=False, user_id=None):
+    transactions = db.get_transactions(date_from, date_to, user_id=user_id)
     income, cogs, expenses = _compute_pl(transactions)
 
     total_income = sum(income.values())
@@ -126,7 +130,7 @@ def export_pl_pdf(filepath, date_from=None, date_to=None, compare=False):
 
     if compare and date_from and date_to:
         prior_from, prior_to = _prior_period(date_from, date_to)
-        prior_txns = db.get_transactions(prior_from, prior_to)
+        prior_txns = db.get_transactions(prior_from, prior_to, user_id=user_id)
         prior_income, prior_cogs, prior_expenses = _compute_pl(prior_txns)
         prior_income_t = sum(prior_income.values())
         prior_cogs_t = sum(prior_cogs.values())
@@ -138,7 +142,7 @@ def export_pl_pdf(filepath, date_from=None, date_to=None, compare=False):
     styles = getSampleStyleSheet()
     elements = []
 
-    _build_pdf_header(elements, styles, "Profit & Loss Statement", date_from, date_to)
+    _build_pdf_header(elements, styles, "Profit & Loss Statement", date_from, date_to, user_id=user_id)
 
     if compare and prior_from:
         col_headers = ["Category", "Current Period", "Prior Period", "Change"]
@@ -202,8 +206,8 @@ def export_pl_pdf(filepath, date_from=None, date_to=None, compare=False):
     doc.build(elements)
 
 
-def export_bs_pdf(filepath):
-    transactions = db.get_transactions()
+def export_bs_pdf(filepath, user_id=None):
+    transactions = db.get_transactions(user_id=user_id)
     assets, liabilities, equity = _compute_bs(transactions)
 
     total_assets = sum(assets.values())
@@ -214,7 +218,7 @@ def export_bs_pdf(filepath):
     styles = getSampleStyleSheet()
     elements = []
 
-    _build_pdf_header(elements, styles, "Balance Sheet")
+    _build_pdf_header(elements, styles, "Balance Sheet", user_id=user_id)
 
     data = [["Category", "Amount"]]
     data.append(["ASSETS", ""])
@@ -249,8 +253,8 @@ def export_bs_pdf(filepath):
 
 # ─── CSV Export ───
 
-def export_pl_csv(filepath, date_from=None, date_to=None, compare=False):
-    transactions = db.get_transactions(date_from, date_to)
+def export_pl_csv(filepath, date_from=None, date_to=None, compare=False, user_id=None):
+    transactions = db.get_transactions(date_from, date_to, user_id=user_id)
     income, cogs, expenses = _compute_pl(transactions)
 
     total_income = sum(income.values())
@@ -267,12 +271,12 @@ def export_pl_csv(filepath, date_from=None, date_to=None, compare=False):
 
     if compare and date_from and date_to:
         prior_from, prior_to = _prior_period(date_from, date_to)
-        prior_txns = db.get_transactions(prior_from, prior_to)
+        prior_txns = db.get_transactions(prior_from, prior_to, user_id=user_id)
         prior_income, prior_cogs, prior_expenses = _compute_pl(prior_txns)
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        company = _get_company_header()
+        company = _get_company_header(user_id)
         writer.writerow([company["name"]])
         info_parts = []
         if company["phone"]:
@@ -330,8 +334,8 @@ def export_pl_csv(filepath, date_from=None, date_to=None, compare=False):
         writer.writerow([f"Net Profit Margin: {margin:.1f}%"])
 
 
-def export_bs_csv(filepath):
-    transactions = db.get_transactions()
+def export_bs_csv(filepath, user_id=None):
+    transactions = db.get_transactions(user_id=user_id)
     assets, liabilities, equity = _compute_bs(transactions)
 
     total_assets = sum(assets.values())
@@ -340,7 +344,7 @@ def export_bs_csv(filepath):
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        company = _get_company_header()
+        company = _get_company_header(user_id)
         writer.writerow([company["name"]])
         info_parts = []
         if company["phone"]:
