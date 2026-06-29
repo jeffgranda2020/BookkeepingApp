@@ -1,12 +1,12 @@
 APP_NAME = "5StarBookKeeping"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.0.4"
 APP_AUTHOR = "Jeff Granda-Arias"
 
 # GitHub repo for update checks (owner/repo)
 GITHUB_REPO = "jeffgranda2020/BookkeepingApp"
 
 CHANGELOG = {
-    "1.1.0": [
+    "1.0.4": [
         "Added user login system — each account has its own isolated data",
         "Strong password requirements (10+ chars, uppercase, lowercase, number, special character)",
         "Blocks common passwords, keyboard patterns, and username-based passwords",
