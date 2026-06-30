@@ -14,6 +14,7 @@ a = Analysis(
     binaries=[
         (os.path.join(PYTHON_DIR, 'vcruntime140.dll'), '.'),
         (os.path.join(PYTHON_DIR, 'vcruntime140_1.dll'), '.'),
+        (os.path.join(PYTHON_DIR, 'python3.dll'), '.'),
         (os.path.join(PYTHON_DIR, 'python314.dll'), '.'),
     ],
     datas=[
