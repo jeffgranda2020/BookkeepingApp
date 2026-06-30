@@ -80,7 +80,7 @@ class LoginWindow:
         self.user_id = None
         self.root = tk.Tk()
         self.root.title("5StarBookKeeping - Login")
-        self.root.geometry("420x560")
+        self.root.geometry("420x580")
         self.root.resizable(False, False)
 
         icon_path = os.path.join(APP_DIR, "app_icon.ico")
@@ -96,9 +96,10 @@ class LoginWindow:
         self.root.mainloop()
 
     def _center_window(self):
+        self._center_window_size(420, 580)
+
+    def _center_window_size(self, w, h):
         self.root.update_idletasks()
-        w = 420
-        h = 560
         x = (self.root.winfo_screenwidth() // 2) - (w // 2)
         y = (self.root.winfo_screenheight() // 2) - (h // 2)
         self.root.geometry(f"{w}x{h}+{x}+{y}")
@@ -109,6 +110,8 @@ class LoginWindow:
 
     def _show_login(self):
         self._clear_frame()
+        self.root.geometry("420x580")
+        self._center_window_size(420, 580)
 
         ttk.Label(self.main_frame, text="5StarBookKeeping",
                   font=("Segoe UI", 18, "bold")).pack(pady=(10, 5))
@@ -174,6 +177,8 @@ class LoginWindow:
 
     def _show_signup(self):
         self._clear_frame()
+        self.root.geometry("420x700")
+        self._center_window_size(420, 700)
 
         ttk.Label(self.main_frame, text="Create Account",
                   font=("Segoe UI", 18, "bold")).pack(pady=(10, 5))
@@ -337,7 +342,8 @@ class LoginWindow:
         qa_pairs = list(zip(questions_chosen, answers))
         db.save_security_questions(user_id, qa_pairs)
 
-        self.root.geometry("420x560")
+        self.root.geometry("420x580")
+        self._center_window_size(420, 580)
 
         if db.get_user_count() == 1 and db.has_legacy_data():
             self._ask_legacy_data(user_id)
@@ -379,7 +385,7 @@ class LoginWindow:
 
     def _show_forgot_username(self):
         self._clear_frame()
-        self.root.geometry("420x560")
+        self.root.geometry("420x580")
 
         ttk.Label(self.main_frame, text="Reset Password",
                   font=("Segoe UI", 16, "bold")).pack(pady=(20, 5))
@@ -465,7 +471,7 @@ class LoginWindow:
 
     def _show_reset_password(self):
         self._clear_frame()
-        self.root.geometry("420x560")
+        self.root.geometry("420x580")
 
         ttk.Label(self.main_frame, text="Set New Password",
                   font=("Segoe UI", 16, "bold")).pack(pady=(20, 5))

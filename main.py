@@ -75,12 +75,25 @@ class BookkeepingApp:
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
 
+        account_menu = tk.Menu(menubar, tearoff=0)
+        account_menu.add_command(label="Log Out", command=self._logout)
+        menubar.add_cascade(label="Account", menu=account_menu)
+
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="Check for Updates", command=self._manual_update_check)
         help_menu.add_command(label="Update Log", command=self._show_update_log)
         help_menu.add_separator()
         help_menu.add_command(label="About", command=self._show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
+
+    def _logout(self):
+        self.root.destroy()
+        login = auth_ui.LoginWindow()
+        if login.user_id is None:
+            sys.exit(0)
+        root = tk.Tk()
+        BookkeepingApp(root, login.user_id)
+        root.mainloop()
 
     def _check_updates(self):
         def on_result(new_version, changelog, download_url):

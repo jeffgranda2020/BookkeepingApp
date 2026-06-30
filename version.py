@@ -1,11 +1,18 @@
 APP_NAME = "5StarBookKeeping"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.1.0-beta"
 APP_AUTHOR = "Jeff Granda-Arias"
 
 # GitHub repo for update checks (owner/repo)
 GITHUB_REPO = "jeffgranda2020/BookkeepingApp"
 
 CHANGELOG = {
+    "1.1.0-beta": [
+        "Fixed Create Account buttons being cut off",
+        "Added Log Out option under Account menu",
+        "Company info now stored uniquely per account",
+        "Fixed services table so each account gets its own independent services",
+        "Full data isolation — transactions, contractors, clients, invoices, services, and company info are all private to each account",
+    ],
     "1.0.4": [
         "Added user login system — each account has its own isolated data",
         "Strong password requirements (10+ chars, uppercase, lowercase, number, special character)",

@@ -95,6 +95,54 @@ def _migrate_add_user_id(cursor):
             except sqlite3.OperationalError:
                 pass
 
+    _migrate_services_unique_constraint(cursor)
+    _migrate_company_info_constraint(cursor)
+
+
+def _migrate_company_info_constraint(cursor):
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='company_info'")
+    row = cursor.fetchone()
+    if not row:
+        return
+    schema = row[0]
+    if "UNIQUE(key, user_id)" in schema:
+        return
+    cursor.execute("ALTER TABLE company_info RENAME TO company_info_old")
+    cursor.execute("""
+        CREATE TABLE company_info (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL,
+            value TEXT,
+            user_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            UNIQUE(key, user_id)
+        )
+    """)
+    cursor.execute("INSERT INTO company_info (key, value, user_id) SELECT key, value, user_id FROM company_info_old")
+    cursor.execute("DROP TABLE company_info_old")
+
+
+def _migrate_services_unique_constraint(cursor):
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='services'")
+    row = cursor.fetchone()
+    if not row:
+        return
+    schema = row[0]
+    if "UNIQUE(name, user_id)" in schema:
+        return
+    cursor.execute("ALTER TABLE services RENAME TO services_old")
+    cursor.execute("""
+        CREATE TABLE services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            user_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            UNIQUE(name, user_id)
+        )
+    """)
+    cursor.execute("INSERT INTO services (id, name, user_id) SELECT id, name, user_id FROM services_old")
+    cursor.execute("DROP TABLE services_old")
+
 
 def has_legacy_data():
     conn = get_connection()
@@ -339,7 +387,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             user_id INTEGER,
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            UNIQUE(name, user_id)
         )
     """)
 
